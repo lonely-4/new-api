@@ -86,15 +86,32 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
 		return nil, model.ErrUserSessionIssuanceLimit
 	}
-	refreshSecret, err := common.GenerateRandomCharsKey(64)
+	session, refreshSecret, err := newLoginSession(userID, user.AuthVersion, loginMethod, ip, userAgent)
 	if err != nil {
 		return nil, err
 	}
+	if err := model.CreateUserSession(session); err != nil {
+		return nil, err
+	}
+	bundle, err := issueAuthBundle(session, session.SID+"."+refreshSecret, true)
+	if err != nil {
+		_, _ = model.RevokeUserSession(userID, session.SID, "token_issue_failed")
+		return nil, err
+	}
+	return bundle, nil
+}
+
+func newLoginSession(userID int, authVersion int64, loginMethod, ip, userAgent string) (*model.UserSession, string, error) {
+	refreshSecret, err := common.GenerateRandomCharsKey(64)
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now().Unix()
 	session := &model.UserSession{
 		SID:             uuid.NewString(),
 		UserID:          userID,
 		Version:         1,
-		UserAuthVersion: user.AuthVersion,
+		UserAuthVersion: authVersion,
 		Status:          model.UserSessionStatusActive,
 		RefreshHash:     hashRefreshSecret(refreshSecret),
 		LoginMethod:     strings.TrimSpace(loginMethod),
@@ -107,15 +124,7 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if session.LoginMethod == "" {
 		session.LoginMethod = "unknown"
 	}
-	if err := model.CreateUserSession(session); err != nil {
-		return nil, err
-	}
-	bundle, err := issueAuthBundle(session, session.SID+"."+refreshSecret, true)
-	if err != nil {
-		_, _ = model.RevokeUserSession(userID, session.SID, "token_issue_failed")
-		return nil, err
-	}
-	return bundle, nil
+	return session, refreshSecret, nil
 }
 
 func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.UserBase, error) {
@@ -138,6 +147,16 @@ func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.Use
 		return nil, nil, ErrLoginSessionRevoked
 	}
 	return session, user, nil
+}
+
+// ValidateStepUpIdentity checks that the identity requesting or consuming a
+// proof is still live: a browser session or a scoped access token.
+func ValidateStepUpIdentity(identity AuthIdentity) error {
+	if _, ok := model.ParseAccessTokenSessionID(identity.SessionID); ok {
+		return model.ValidateAccessTokenIdentity(identity)
+	}
+	_, _, err := ValidateLoginSession(identity)
+	return err
 }
 
 // ValidateSessionReference validates a server-side flow bound to an existing
@@ -165,7 +184,8 @@ func ValidateSessionReference(userID int, sid string) (AuthIdentity, error) {
 // AdvanceCurrentSessionSecurity increments the user's global auth version,
 // preserves only the current browser session at a new session version and
 // returns a replacement access token. Call after a successful 2FA/passkey
-// security-setting mutation that did not already advance AuthVersion.
+// security-setting mutation that did not already advance AuthVersion. When the
+// change was made through an access token it returns a nil bundle.
 func AdvanceCurrentSessionSecurity(identity AuthIdentity, reason string) (*AuthBundle, error) {
 	nextUserAuthVersion, err := model.BumpUserAuthVersion(identity.UserID)
 	if err != nil {
@@ -189,6 +209,12 @@ func AdvanceCurrentSessionToUserVersion(identity AuthIdentity, reason string) (*
 }
 
 func advanceCurrentSessionToVersion(identity AuthIdentity, nextUserAuthVersion int64, reason string) (*AuthBundle, error) {
+	// An access token has no browser session to keep, so every browser session
+	// signs in again at the new auth version. The token itself stays valid.
+	if _, ok := model.ParseAccessTokenSessionID(identity.SessionID); ok {
+		_, err := model.RevokeAllUserSessions(identity.UserID, reason)
+		return nil, err
+	}
 	session, err := model.AdvanceUserSessionAuthVersion(
 		identity.UserID,
 		identity.SessionID,
@@ -227,7 +253,7 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 	if err != nil {
 		return nil, nil, err
 	}
-	currentUser, err := model.GetUserById(session.UserID, false)
+	currentUser, err := model.GetSelfUserById(session.UserID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -303,10 +329,7 @@ func WriteRefreshCookie(c *gin.Context, rawToken string) {
 			expiresAt = time.Unix(session.ExpiresAt, 0)
 		}
 	}
-	maxAge := int(time.Until(expiresAt) / time.Second)
-	if maxAge < 1 {
-		maxAge = 1
-	}
+	maxAge := max(int(time.Until(expiresAt)/time.Second), 1)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     RefreshCookieName,
 		Value:    rawToken,

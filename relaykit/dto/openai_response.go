@@ -80,7 +80,7 @@ type FlexibleEmbeddingResponse struct {
 }
 
 type ChatCompletionsStreamResponseChoice struct {
-	Delta        ChatCompletionsStreamResponseChoiceDelta `json:"delta,omitempty"`
+	Delta        ChatCompletionsStreamResponseChoiceDelta `json:"delta"`
 	Logprobs     *any                                     `json:"logprobs"`
 	FinishReason *string                                  `json:"finish_reason"`
 	Index        int                                      `json:"index"`
@@ -234,11 +234,12 @@ type Usage struct {
 	UsageSource          string        `json:"usage_source,omitempty"`
 	BillingUsage         *BillingUsage `json:"billing_usage,omitempty"`
 
-	PromptTokensDetails    InputTokenDetails  `json:"prompt_tokens_details"`
-	CompletionTokenDetails OutputTokenDetails `json:"completion_tokens_details"`
-	InputTokens            int                `json:"input_tokens"`
-	OutputTokens           int                `json:"output_tokens"`
-	InputTokensDetails     *InputTokenDetails `json:"input_tokens_details"`
+	PromptTokensDetails    InputTokenDetails   `json:"prompt_tokens_details"`
+	CompletionTokenDetails OutputTokenDetails  `json:"completion_tokens_details"`
+	InputTokens            int                 `json:"input_tokens"`
+	OutputTokens           int                 `json:"output_tokens"`
+	InputTokensDetails     *InputTokenDetails  `json:"input_tokens_details"`
+	OutputTokensDetails    *OutputTokenDetails `json:"output_tokens_details,omitempty"`
 
 	// claude cache 1h
 	ClaudeCacheCreation5mTokens int `json:"claude_cache_creation_5_m_tokens"`
@@ -259,8 +260,9 @@ type OpenAIVideoResponse struct {
 }
 
 type InputTokenDetails struct {
-	CachedTokens         int `json:"cached_tokens"`
-	CachedCreationTokens int `json:"cached_creation_tokens,omitempty"`
+	CachedTokens         int                 `json:"cached_tokens"`
+	CachedTokensDetails  *CachedTokenDetails `json:"cached_tokens_details,omitempty"`
+	CachedCreationTokens int                 `json:"cached_creation_tokens,omitempty"`
 	// CacheWriteTokens is OpenAI's native cache-write count, reported as
 	// prompt_tokens_details.cache_write_tokens (Chat Completions) or
 	// input_tokens_details.cache_write_tokens (Responses). It is billed at the
@@ -271,6 +273,40 @@ type InputTokenDetails struct {
 	ImageTokens      int `json:"image_tokens"`
 }
 
+// CachedTokenDetails describes subsets of cached_tokens. Pointers distinguish
+// an unreported modality from an explicitly reported zero.
+type CachedTokenDetails struct {
+	TextTokens  *int `json:"text_tokens,omitempty"`
+	ImageTokens *int `json:"image_tokens,omitempty"`
+	AudioTokens *int `json:"audio_tokens,omitempty"`
+}
+
+func (d *CachedTokenDetails) HasTokens() bool {
+	return d != nil && (d.TextTokens != nil && *d.TextTokens != 0 ||
+		d.ImageTokens != nil && *d.ImageTokens != 0 || d.AudioTokens != nil && *d.AudioTokens != 0)
+}
+
+// Clone preserves presence information without sharing mutable usage fields.
+func (d InputTokenDetails) Clone() InputTokenDetails {
+	if d.CachedTokensDetails != nil {
+		cached := *d.CachedTokensDetails
+		if cached.TextTokens != nil {
+			value := *cached.TextTokens
+			cached.TextTokens = &value
+		}
+		if cached.ImageTokens != nil {
+			value := *cached.ImageTokens
+			cached.ImageTokens = &value
+		}
+		if cached.AudioTokens != nil {
+			value := *cached.AudioTokens
+			cached.AudioTokens = &value
+		}
+		d.CachedTokensDetails = &cached
+	}
+	return d
+}
+
 // CacheCreationTokensTotal returns the cache-write token count regardless of
 // which field the upstream reported it in: Claude-derived conversions populate
 // CachedCreationTokens while OpenAI reports cache_write_tokens natively. Both
@@ -278,10 +314,7 @@ type InputTokenDetails struct {
 // value wins so the same tokens are never double-counted. Negative upstream
 // values are clamped to zero so they can never lower a charge.
 func (d InputTokenDetails) CacheCreationTokensTotal() int {
-	total := d.CachedCreationTokens
-	if d.CacheWriteTokens > total {
-		total = d.CacheWriteTokens
-	}
+	total := max(d.CacheWriteTokens, d.CachedCreationTokens)
 	if total < 0 {
 		return 0
 	}
@@ -298,7 +331,7 @@ type OutputTokenDetails struct {
 type OpenAIResponsesResponse struct {
 	ID                 string             `json:"id"`
 	Object             string             `json:"object"`
-	CreatedAt          int                `json:"created_at"`
+	CreatedAt          IntValue           `json:"created_at"`
 	Status             json.RawMessage    `json:"status"`
 	Error              any                `json:"error,omitempty"`
 	IncompleteDetails  *IncompleteDetails `json:"incomplete_details,omitempty"`
@@ -342,6 +375,7 @@ type ResponsesOutput struct {
 	CallId              string                          `json:"call_id,omitempty"`
 	Name                string                          `json:"name,omitempty"`
 	Arguments           json.RawMessage                 `json:"arguments,omitempty"`
+	Input               json.RawMessage                 `json:"input,omitempty"`
 	Action              json.RawMessage                 `json:"action,omitempty"`
 	Queries             json.RawMessage                 `json:"queries,omitempty"`
 	Results             json.RawMessage                 `json:"results,omitempty"`
@@ -360,9 +394,23 @@ type ResponsesOutput struct {
 
 // MarshalJSON keeps hosted-tool variants within their protocol-specific
 // schemas. ResponsesOutput also represents messages, images, and function
-// calls, whose fields must not leak into web_search_call or mcp_call items.
+// calls, whose fields must not leak into web_search_call, mcp_call, or
+// custom_tool_call items.
 func (r ResponsesOutput) MarshalJSON() ([]byte, error) {
 	switch r.Type {
+	case "custom_tool_call":
+		input := r.Input
+		if len(input) == 0 {
+			input = json.RawMessage(`""`)
+		}
+		return kitutil.Marshal(struct {
+			Type   string          `json:"type"`
+			ID     string          `json:"id,omitempty"`
+			Status string          `json:"status,omitempty"`
+			CallID string          `json:"call_id"`
+			Name   string          `json:"name"`
+			Input  json.RawMessage `json:"input"`
+		}{Type: r.Type, ID: r.ID, Status: r.Status, CallID: r.CallId, Name: r.Name, Input: input})
 	case "web_search_call":
 		return kitutil.Marshal(struct {
 			Type   string          `json:"type"`
@@ -483,9 +531,9 @@ func ResponsesArgumentsString(arguments json.RawMessage) string {
 }
 
 type ResponsesOutputContent struct {
-	Type        string        `json:"type"`
-	Text        string        `json:"text"`
-	Annotations []interface{} `json:"annotations"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Annotations []any  `json:"annotations"`
 }
 
 type ResponsesReasoningSummaryPart struct {
@@ -522,6 +570,7 @@ type ResponsesStreamResponse struct {
 	Param           string                   `json:"param,omitempty"`
 	Delta           string                   `json:"delta,omitempty"`
 	Arguments       *string                  `json:"arguments,omitempty"`
+	Input           *string                  `json:"input,omitempty"`
 	Name            string                   `json:"name,omitempty"`
 	Text            *string                  `json:"text,omitempty"`
 	Item            *ResponsesOutput         `json:"item,omitempty"`
@@ -531,6 +580,8 @@ type ResponsesStreamResponse struct {
 	Obfuscation     string                   `json:"obfuscation,omitempty"`
 	// - response.function_call_arguments.delta
 	// - response.function_call_arguments.done
+	// - response.custom_tool_call_input.delta
+	// - response.custom_tool_call_input.done
 	OutputIndex  *int                           `json:"output_index,omitempty"`
 	ContentIndex *int                           `json:"content_index,omitempty"`
 	SummaryIndex *int                           `json:"summary_index,omitempty"`
@@ -549,7 +600,7 @@ func GetOpenAIError(errorField any) *types.OpenAIError {
 		return &err
 	case *types.OpenAIError:
 		return err
-	case map[string]interface{}:
+	case map[string]any:
 		// 处理从JSON解析来的map结构
 		openaiErr := &types.OpenAIError{}
 		if errType, ok := err["type"].(string); ok {

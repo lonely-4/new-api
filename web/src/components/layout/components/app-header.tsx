@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { SystemUpdateAction } from '@/features/system-update/system-update-action'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 
 import { defaultTopNavLinks } from '../config/top-nav.config'
@@ -104,14 +105,17 @@ export function AppHeader({
 
   return (
     <Header>
-      <SystemBrand variant='inline' />
+      <div className='@container/system-brand flex min-w-0 flex-1 items-center gap-1'>
+        <SystemBrand variant='inline' />
+        <SystemUpdateAction presentation='version' />
+      </div>
 
       {leftContent ? (
         <div className='ms-2 flex items-center'>{leftContent}</div>
       ) : null}
 
       {rightContent ?? (
-        <div className='ms-auto flex items-center gap-1 sm:gap-2'>
+        <div className='ms-auto flex shrink-0 items-center gap-1 sm:gap-2'>
           {showTopNav && (
             <div className='me-1 hidden lg:block'>
               <TopNav links={links} />
