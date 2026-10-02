@@ -26,7 +26,6 @@ import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { SystemUpdateAction } from '@/features/system-update/system-update-action'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
@@ -193,20 +192,17 @@ export function PublicHeader(props: PublicHeaderProps) {
         <div className='pointer-events-auto mx-auto max-w-7xl px-4 pt-3 md:px-6'>
           <nav className='bg-background/60 ring-border/50 flex h-12 items-center justify-between rounded-2xl pr-1.5 pl-4 shadow-[0_2px_16px_-6px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.02)] ring-[0.5px] backdrop-blur-2xl dark:shadow-[0_2px_16px_-6px_rgba(0,0,0,0.4)]'>
             {/* Logo */}
-            <div className='@container/system-brand flex min-w-0 items-center gap-1'>
-              <Link
-                to={homeUrl}
-                className='group flex min-w-0 items-center gap-2.5'
-              >
-                <div className='flex size-7 shrink-0 items-center justify-center transition-all duration-300 group-hover:scale-105'>
-                  {logoNode}
-                </div>
-                <span className='text-sm font-semibold tracking-tight'>
-                  {loading ? <Skeleton className='h-4 w-16' /> : displaySiteName}
-                </span>
-              </Link>
-              <SystemUpdateAction presentation='version' />
-            </div>
+            <Link
+              to={homeUrl}
+              className='group flex shrink-0 items-center gap-2.5'
+            >
+              <div className='flex size-7 shrink-0 items-center justify-center transition-all duration-300 group-hover:scale-105'>
+                {logoNode}
+              </div>
+              <span className='text-sm font-semibold tracking-tight'>
+                {loading ? <Skeleton className='h-4 w-16' /> : displaySiteName}
+              </span>
+            </Link>
 
             {/* Desktop nav + actions */}
             <div className='hidden items-center gap-0.5 sm:flex'>
