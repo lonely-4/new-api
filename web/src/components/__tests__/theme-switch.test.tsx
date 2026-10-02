@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, test } from 'vitest'
 
-const { removeCookie } = await import('@/lib/cookies')
+const { THEME_STORAGE_KEYS } = await import('@/lib/theme-storage')
 const { ThemeProvider } = await import('@/context/theme-provider')
 const { ThemeSwitch } = await import('../theme-switch')
 
@@ -37,7 +37,8 @@ function getButton() {
 
 describe('theme switch cycle button', () => {
   beforeEach(() => {
-    removeCookie('vite-ui-theme')
+    // Theme preferences live in localStorage, not in the legacy cookie.
+    window.localStorage.removeItem(THEME_STORAGE_KEYS.mode)
     document.documentElement.classList.remove('light', 'dark')
   })
 
